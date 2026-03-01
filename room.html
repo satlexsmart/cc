@@ -10,10 +10,13 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-storage-compat.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .chat-bg { background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png'); background-blend-mode: overlay; }
+        .recording { animation: pulse-red 1.5s infinite; }
+        @keyframes pulse-red { 0% { color: #ef4444; transform: scale(1); } 50% { color: #dc2626; transform: scale(1.2); } 100% { color: #ef4444; transform: scale(1); } }
     </style>
 </head>
 <body class="bg-slate-200 dark:bg-slate-950 h-screen flex justify-center sm:py-4 transition-colors">
@@ -46,6 +49,14 @@
         </div>
 
         <div class="bg-white dark:bg-black px-3 py-4 border-t dark:border-slate-800 flex items-end gap-2">
+            <input type="file" id="image-upload" accept="image/*" class="hidden" onchange="uploadImage(event)">
+            <button onclick="document.getElementById('image-upload').click()" class="text-gray-400 hover:text-emerald-500 transition p-2">
+                <i class="fa-solid fa-paperclip text-lg"></i>
+            </button>
+            <button id="mic-btn" onclick="toggleRecording()" class="text-gray-400 hover:text-red-500 transition p-2">
+                <i class="fa-solid fa-microphone text-lg"></i>
+            </button>
+            
             <div class="flex-1 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center px-4 py-1 border border-transparent focus-within:border-emerald-500 transition-all">
                 <textarea id="msg-input" rows="1" placeholder="Type here..." class="w-full bg-transparent py-2 text-sm outline-none resize-none no-scrollbar dark:text-white"></textarea>
             </div>
@@ -68,12 +79,13 @@
 
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
+        const storage = firebase.storage();
+        
         const urlParams = new URLSearchParams(window.location.search);
         const CURRENT_USER = urlParams.get('name') || "Guest";
         const PHOTO = urlParams.get('photo') || `https://ui-avatars.com/api/?name=${CURRENT_USER}&background=random`;
 
         const userRef = db.collection("community_users").doc(CURRENT_USER);
-        
         const setOnline = () => userRef.set({ online: true, photo: PHOTO, lastSeen: Date.now() }, { merge: true });
         const setOffline = () => userRef.set({ online: false }, { merge: true });
 
@@ -85,11 +97,97 @@
             else setOffline();
         });
 
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+
+        async function toggleRecording() {
+            const micBtn = document.getElementById('mic-btn');
+            const input = document.getElementById('msg-input');
+
+            if (!isRecording) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    mediaRecorder = new MediaRecorder(stream);
+                    audioChunks = [];
+
+                    mediaRecorder.ondataavailable = e => {
+                        if (e.data.size > 0) audioChunks.push(e.data);
+                    };
+
+                    mediaRecorder.onstop = async () => {
+                        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        const fileName = `audio_${Date.now()}.webm`;
+                        const storageRef = storage.ref(`chat_audio/${fileName}`);
+                        
+                        input.placeholder = "Uploading audio...";
+                        await storageRef.put(audioBlob);
+                        const downloadURL = await storageRef.getDownloadURL();
+                        
+                        await db.collection("community_messages").add({
+                            sender: CURRENT_USER,
+                            photo: PHOTO,
+                            audioUrl: downloadURL,
+                            type: 'audio',
+                            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        
+                        input.placeholder = "Type here...";
+                    };
+
+                    mediaRecorder.start();
+                    isRecording = true;
+                    micBtn.classList.add('recording');
+                    input.placeholder = "Recording...";
+                    input.disabled = true;
+                } catch (err) {
+                    alert("Microphone access denied.");
+                }
+            } else {
+                mediaRecorder.stop();
+                isRecording = false;
+                micBtn.classList.remove('recording');
+                input.disabled = false;
+            }
+        }
+
+        async function uploadImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const input = document.getElementById('msg-input');
+            input.placeholder = "Uploading image...";
+            input.disabled = true;
+
+            const fileName = `image_${Date.now()}_${file.name}`;
+            const storageRef = storage.ref(`chat_images/${fileName}`);
+
+            try {
+                await storageRef.put(file);
+                const downloadURL = await storageRef.getDownloadURL();
+
+                await db.collection("community_messages").add({
+                    sender: CURRENT_USER,
+                    photo: PHOTO,
+                    imageUrl: downloadURL,
+                    type: 'image',
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+                });
+            } catch (error) {
+                alert("Image upload failed.");
+            }
+
+            input.placeholder = "Type here...";
+            input.disabled = false;
+            event.target.value = "";
+        }
+
         async function askAI(prompt) {
             if (!prompt || prompt.trim() === "") {
                 db.collection("community_messages").add({
                     sender: "🤖 SATLEX AI",
                     text: "You need to ask a question! (e.g., 'ai answer what is HTML?')",
+                    type: 'text',
                     timestamp: firebase.firestore.FieldValue.serverTimestamp(),
                     isAI: true
                 });
@@ -109,11 +207,7 @@
                     })
                 });
                 
-                if (!res.ok) {
-                    const errorData = await res.json();
-                    console.error("GROQ_ERROR_DETAILS:", errorData);
-                    throw new Error("Bad Request");
-                }
+                if (!res.ok) throw new Error("Bad Request");
                 
                 const data = await res.json();
                 const reply = data.choices[0].message.content;
@@ -121,13 +215,15 @@
                 db.collection("community_messages").add({
                     sender: "🤖 SATLEX AI",
                     text: reply,
+                    type: 'text',
                     timestamp: firebase.firestore.FieldValue.serverTimestamp(),
                     isAI: true
                 });
             } catch (e) {
                 db.collection("community_messages").add({
                     sender: "🤖 SATLEX AI",
-                    text: "Connection Error. Check the F12 Console for GROQ_ERROR_DETAILS.",
+                    text: "Connection Error. Check the F12 Console for details.",
+                    type: 'text',
                     timestamp: firebase.firestore.FieldValue.serverTimestamp(),
                     isAI: true
                 });
@@ -153,7 +249,9 @@
 
             await db.collection("community_messages").add({
                 sender: CURRENT_USER,
+                photo: PHOTO,
                 text: text,
+                type: 'text',
                 timestamp: firebase.firestore.FieldValue.serverTimestamp()
             });
 
@@ -170,12 +268,24 @@
                 const d = doc.data();
                 const isMe = d.sender === CURRENT_USER;
                 const isAI = d.isAI;
+                const avatar = isAI ? 'https://ui-avatars.com/api/?name=AI&background=2563EB&color=fff' : (d.photo || `https://ui-avatars.com/api/?name=${d.sender}&background=random`);
                 
+                let mediaContent = '';
+                if (d.type === 'image' && d.imageUrl) {
+                    mediaContent = `<img src="${d.imageUrl}" class="w-full max-w-xs rounded-xl mt-1 object-cover cursor-pointer hover:opacity-90 transition" onclick="window.open('${d.imageUrl}', '_blank')">`;
+                } else if (d.type === 'audio' && d.audioUrl) {
+                    mediaContent = `<audio controls src="${d.audioUrl}" class="mt-1 w-full max-w-[220px] h-10"></audio>`;
+                }
+
                 container.innerHTML += `
-                    <div class="flex ${isMe ? 'justify-end' : 'justify-start'}">
-                        <div class="max-w-[85%] ${isMe ? 'bg-emerald-600 text-white rounded-2xl rounded-tr-none' : isAI ? 'bg-blue-600 text-white rounded-2xl rounded-tl-none' : 'bg-white dark:bg-slate-800 dark:text-white rounded-2xl rounded-tl-none'} p-3 shadow-sm">
-                            <p class="text-[10px] font-black opacity-70 mb-1 uppercase">${d.sender}</p>
-                            <p class="text-sm leading-relaxed">${d.text}</p>
+                    <div class="flex ${isMe ? 'justify-end' : 'justify-start'} items-end mb-2">
+                        ${!isMe ? `<img src="${avatar}" class="w-6 h-6 rounded-full mr-2 mb-1 border border-gray-300 dark:border-slate-700">` : ''}
+                        <div class="max-w-[85%] flex flex-col">
+                            <div class="${isMe ? 'bg-emerald-600 text-white rounded-2xl rounded-br-sm' : isAI ? 'bg-blue-600 text-white rounded-2xl rounded-bl-sm' : 'bg-white dark:bg-slate-800 dark:text-white rounded-2xl rounded-bl-sm'} p-3 shadow-sm border border-transparent dark:border-slate-700">
+                                ${!isMe ? `<p class="text-[10px] font-black opacity-70 mb-1 uppercase">${d.sender}</p>` : ''}
+                                ${d.text ? `<p class="text-sm leading-relaxed">${d.text}</p>` : ''}
+                                ${mediaContent}
+                            </div>
                         </div>
                     </div>`;
             });
@@ -188,7 +298,15 @@
             cont.innerHTML = '';
             snap.forEach(doc => {
                 const d = doc.data();
-                cont.innerHTML += `<img src="${d.photo}" class="w-8 h-8 rounded-full border-2 border-emerald-500 p-0.5" title="${doc.id}">`;
+                const displayName = doc.id === CURRENT_USER ? 'You' : doc.id;
+                cont.innerHTML += `
+                    <div class="flex flex-col items-center min-w-[50px]">
+                        <div class="relative">
+                            <img src="${d.photo}" class="w-10 h-10 rounded-full border-2 border-emerald-500 object-cover bg-white">
+                            <div class="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-white dark:border-slate-900"></div>
+                        </div>
+                        <span class="text-[9px] mt-1.5 font-bold text-slate-700 dark:text-slate-300 truncate w-14 text-center">${displayName}</span>
+                    </div>`;
             });
         });
 
