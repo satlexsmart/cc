@@ -86,15 +86,53 @@
         });
 
         async function askAI(prompt) {
+            if (!prompt || prompt.trim() === "") {
+                db.collection("community_messages").add({
+                    sender: "🤖 SATLEX AI",
+                    text: "You need to ask a question! (e.g., 'ai answer what is HTML?')",
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+                    isAI: true
+                });
+                return;
+            }
+
             try {
                 const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
                     method: "POST",
-                    headers: { "Authorization": `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
+                    headers: { 
+                        "Authorization": `Bearer ${GROQ_API_KEY}`, 
+                        "Content-Type": "application/json" 
+                    },
                     body: JSON.stringify({
-                        model: "llama3-8b-8192",
+                        model: "llama-3.1-8b-instant",
                         messages: [{ role: "user", content: prompt }]
                     })
                 });
+                
+                if (!res.ok) {
+                    const errorData = await res.json();
+                    console.error("GROQ_ERROR_DETAILS:", errorData);
+                    throw new Error("Bad Request");
+                }
+                
+                const data = await res.json();
+                const reply = data.choices[0].message.content;
+                
+                db.collection("community_messages").add({
+                    sender: "🤖 SATLEX AI",
+                    text: reply,
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+                    isAI: true
+                });
+            } catch (e) {
+                db.collection("community_messages").add({
+                    sender: "🤖 SATLEX AI",
+                    text: "Connection Error. Check the F12 Console for GROQ_ERROR_DETAILS.",
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+                    isAI: true
+                });
+            }
+        });
                 
                 if (!res.ok) throw new Error("API failed");
                 
