@@ -104,7 +104,7 @@
                         "Content-Type": "application/json" 
                     },
                     body: JSON.stringify({
-                        model: "llama-3.1-8b-instant",
+                        model: "llama-3.3-70b-versatile",
                         messages: [{ role: "user", content: prompt }]
                     })
                 });
@@ -128,27 +128,6 @@
                 db.collection("community_messages").add({
                     sender: "🤖 SATLEX AI",
                     text: "Connection Error. Check the F12 Console for GROQ_ERROR_DETAILS.",
-                    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-                    isAI: true
-                });
-            }
-        });
-                
-                if (!res.ok) throw new Error("API failed");
-                
-                const data = await res.json();
-                const reply = data.choices[0].message.content;
-                
-                db.collection("community_messages").add({
-                    sender: "🤖 SATLEX AI",
-                    text: reply,
-                    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-                    isAI: true
-                });
-            } catch (e) {
-                db.collection("community_messages").add({
-                    sender: "🤖 SATLEX AI",
-                    text: "Error connecting to AI. Please try again.",
                     timestamp: firebase.firestore.FieldValue.serverTimestamp(),
                     isAI: true
                 });
