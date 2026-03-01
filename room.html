@@ -29,7 +29,7 @@
                 </div>
             </div>
             <div class="flex gap-3">
-                <button onclick="flushChat()" title="Flush Chat" class="text-red-400 hover:text-red-500 transition"><i class="fa-solid fa-trash-can"></i></button>
+                <button onclick="flushChat()" class="text-red-400 hover:text-red-500 transition"><i class="fa-solid fa-trash-can"></i></button>
                 <button onclick="toggleTheme()" class="text-gray-300 hover:text-white transition w-8 h-8 rounded-full bg-slate-800 flex justify-center items-center">
                     <i id="theme-icon" class="fa-solid fa-moon text-xs"></i>
                 </button>
@@ -47,7 +47,7 @@
 
         <div class="bg-white dark:bg-black px-3 py-4 border-t dark:border-slate-800 flex items-end gap-2">
             <div class="flex-1 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center px-4 py-1 border border-transparent focus-within:border-emerald-500 transition-all">
-                <textarea id="msg-input" rows="1" placeholder="Type 'ai answer [question]'..." class="w-full bg-transparent py-2 text-sm outline-none resize-none no-scrollbar dark:text-white"></textarea>
+                <textarea id="msg-input" rows="1" placeholder="Type here..." class="w-full bg-transparent py-2 text-sm outline-none resize-none no-scrollbar dark:text-white"></textarea>
             </div>
             <button onclick="sendMessage()" class="bg-emerald-600 text-white w-10 h-10 rounded-xl flex items-center justify-center shadow-lg hover:bg-emerald-500 active:scale-90 transition-all">
                 <i class="fa-solid fa-paper-plane text-sm"></i>
@@ -73,8 +73,17 @@
         const PHOTO = urlParams.get('photo') || `https://ui-avatars.com/api/?name=${CURRENT_USER}&background=random`;
 
         const userRef = db.collection("community_users").doc(CURRENT_USER);
-        userRef.set({ online: true, photo: PHOTO, lastSeen: Date.now() }, { merge: true });
-        window.onbeforeunload = () => userRef.update({ online: false });
+        
+        const setOnline = () => userRef.set({ online: true, photo: PHOTO, lastSeen: Date.now() }, { merge: true });
+        const setOffline = () => userRef.set({ online: false }, { merge: true });
+
+        setOnline();
+        window.addEventListener('beforeunload', setOffline);
+        window.addEventListener('pagehide', setOffline);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') setOnline();
+            else setOffline();
+        });
 
         async function askAI(prompt) {
             try {
@@ -86,6 +95,9 @@
                         messages: [{ role: "user", content: prompt }]
                     })
                 });
+                
+                if (!res.ok) throw new Error("API failed");
+                
                 const data = await res.json();
                 const reply = data.choices[0].message.content;
                 
@@ -96,7 +108,12 @@
                     isAI: true
                 });
             } catch (e) {
-                console.error(e);
+                db.collection("community_messages").add({
+                    sender: "🤖 SATLEX AI",
+                    text: "Error connecting to AI. Please try again.",
+                    timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+                    isAI: true
+                });
             }
         }
 
@@ -115,6 +132,7 @@
 
             input.value = '';
             input.style.height = 'auto';
+            db.collection("community_system").doc("typing").set({ [CURRENT_USER]: false }, { merge: true });
 
             await db.collection("community_messages").add({
                 sender: CURRENT_USER,
@@ -157,6 +175,21 @@
             });
         });
 
+        db.collection("community_system").doc("typing").onSnapshot((doc) => {
+            if (doc.exists) {
+                const data = doc.data();
+                const isAnyoneElseTyping = Object.keys(data).some(key => key !== CURRENT_USER && data[key] === true);
+                const indicator = document.getElementById('typing-indicator');
+                if (isAnyoneElseTyping) {
+                    indicator.classList.remove('hidden');
+                    const win = document.getElementById('chat-window');
+                    win.scrollTop = win.scrollHeight;
+                } else {
+                    indicator.classList.add('hidden');
+                }
+            }
+        });
+
         function toggleTheme() {
             document.documentElement.classList.toggle('dark');
             const icon = document.getElementById('theme-icon');
@@ -165,9 +198,18 @@
         }
 
         const msgInput = document.getElementById('msg-input');
+        let typingTimeout;
+        
         msgInput.addEventListener('input', () => {
             msgInput.style.height = 'auto';
             msgInput.style.height = msgInput.scrollHeight + 'px';
+            
+            db.collection("community_system").doc("typing").set({ [CURRENT_USER]: true }, { merge: true });
+            
+            clearTimeout(typingTimeout);
+            typingTimeout = setTimeout(() => {
+                db.collection("community_system").doc("typing").set({ [CURRENT_USER]: false }, { merge: true });
+            }, 1500);
         });
 
         msgInput.addEventListener('keydown', (e) => {
